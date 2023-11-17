@@ -1,0 +1,98 @@
+# Description
+# ===========
+# This playbook creates an Azure Red Hat OpenShift cluster
+# Run this playbook from the same location as the pull-secret you downloaded. If you don't specify your --pull-secret
+# your cluster will not include samples or operators from Red Hat or from certified partners.
+# from console.redhat.com
+# The domain is optional, so feel free to comment it out
+#
+# Make sure you have at least 40-50 vCPUs in your target deployment region.
+# https://docs.microsoft.com/en-us/azure/azure-portal/supportability/regional-quota-requests
+# az vm list-usage --location "Central US" --output table | grep "Total Regional vCPUs"
+#
+# Make sure the default worker nodes have enough quota. i.e., you need at least 36 vCPUS.
+# az vm list-usage --location "Central US" --output table | grep "Standard DSv3 Family vCPUs"
+# https://docs.microsoft.com/en-us/azure/azure-portal/supportability/per-vm-quota-requests?wt.mc_id=aroworkshop
+#
+# To run this playbook, please ensure you're logged into your Azure account: az login. Then run ansible-playbook aro_deployment.yaml
+# If you don't specify your --pull-secret your cluster will not include samples or operators from Red Hat or from certified partners.
+#
+# If you specify the --domain foo.example.com parameter you are responsible for creating the api and *.apps DNS A or CNAME records.
+#
+# To delete the cluster and remove other resources:
+# az group delete --name aro && az group delete --name NetworkWatcherRG && az group delete --name NetworkWatcher_centralus
+
+- hosts: localhost
+  connection: local
+  vars:
+    LOCATION: westeurope
+    RESOURCEGROUP: RG-102-aro-prod01
+    CLUSTER: rg-102-aro-prod01
+    DOMAIN: openshifthelp.com
+    MASTER_SIZE : Standard_D4s_v3
+    WORKER_SIZE : Standard_D4s_v3
+    WORKER_COUNT: 3
+    DISK_SIZE: 128
+
+  tasks:
+  - name: "Create resource group"
+    command:
+      cmd: az group create --name {{ RESOURCEGROUP }} --location {{ LOCATION }}
+  - name: "Create a new virtual network in the same resource group you created earlier"
+    command: az network vnet create --resource-group {{ RESOURCEGROUP }} \
+              --name aro-vnet --address-prefixes 10.0.0.0/22
+  - name: "Add an empty subnet for the master nodes"
+    command: az network vnet subnet create \
+              --resource-group {{ RESOURCEGROUP }} \
+              --vnet-name aro-vnet \
+              --name master-subnet \
+              --address-prefixes 10.0.0.0/23 \
+              --service-endpoints Microsoft.ContainerRegistry
+  - name: "Add an empty subnet for the worker nodes"
+    command: az network vnet subnet create \
+              --resource-group {{ RESOURCEGROUP }} \
+              --vnet-name aro-vnet \
+              --name worker-subnet \
+              --address-prefixes 10.0.2.0/23 \
+              --service-endpoints Microsoft.ContainerRegistry
+  - name: "Disable subnet private endpoint policies on the master subnet"
+    command: az network vnet subnet update \
+              --name master-subnet \
+              --resource-group {{ RESOURCEGROUP }} \
+              --vnet-name aro-vnet \
+              --disable-private-link-service-network-policies true
+  - name: "Now, let's create the ARO cluster. Please check back in roughly 20-30 minutes."
+    command: az aro create \
+              --resource-group {{ RESOURCEGROUP }} \
+              --name {{ CLUSTER }} \
+              --vnet aro-vnet \
+              --master-subnet master-subnet \
+              --worker-subnet worker-subnet
+              --pull-secret @pull-secret.txt
+              --domain {{ DOMAIN }}
+              --master-vm-size {{ MASTER_SIZE }}
+              --worker-vm-size {{ WORKER_SIZE }}
+              --worker-count {{ WORKER_COUNT }}
+              --worker-vm-disk-size-gb {{ DISK_SIZE }}
+# Post install commands
+  - name: "List Kubeadmin credentials"
+    command: az aro list-credentials \
+              --name {{ CLUSTER }} \
+              --resource-group {{ RESOURCEGROUP }}
+    register: results
+  - debug:
+      var: results.stdout
+  - name: "List the OpenShift console URL"
+    command: az aro show \
+              --name {{ CLUSTER }} \
+              --resource-group {{ RESOURCEGROUP }} \
+              --query "consoleProfile.url" -o tsv
+    register: results
+  - debug:
+      var: results.stdout
+  - name: "List the cluster's details, including the API and ingress"
+    command: az aro show
+             --name {{ CLUSTER }} --resource-group {{ RESOURCEGROUP }}
+    register: results
+  - debug:
+      var: results.stdout
